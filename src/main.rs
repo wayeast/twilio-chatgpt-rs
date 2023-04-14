@@ -131,6 +131,8 @@ async fn hear_stuff(mut receiver: SplitStream<WebSocket>, sid_sink: oneshot::Sen
     }
 }
 
+const USE_GOOGLE_TTS: bool = true;
+const WRITE_SHIT_TO_FILES: bool = true;
 async fn say_something(
     mut sender: SplitSink<WebSocket, Message>,
     sid_src: oneshot::Receiver<String>,
@@ -146,71 +148,73 @@ async fn say_something(
 
     sleep(Duration::from_secs(1)).await;
 
-    // let params = TextSynthesizeParams::default();
-    // // Rust code that does and returns the equivalent of the steps at
-    // // https://cloud.google.com/text-to-speech/docs/create-audio-text-command-line#synthesize_audio_from_text
-    // let audio_config = AudioConfig {
-    //     audio_encoding: Some(AudioConfigAudioEncoding::MULAW),
-    //     sample_rate_hertz: Some(8_000),
-    //     ..Default::default()
-    // };
-    // let input = SynthesisInput {
-    //     text: Some(TEST.to_string()),
-    //     ..Default::default()
-    // };
-    // let voice = VoiceSelectionParams {
-    //     language_code: Some("en-US".to_string()),
-    //     name: Some("en-US-Standard-E".to_string()),
-    //     ssml_gender: Some(VoiceSelectionParamsSsmlGender::FEMALE),
-    //     ..Default::default()
-    // };
-    // let speech_request = SynthesizeSpeechRequest {
-    //     audio_config: Some(audio_config),
-    //     input: Some(input),
-    //     voice: Some(voice),
-    // };
-    // let synthesize_response = app_state
-    //     .gcs_client
-    //     .synthesize(&params, &speech_request)
-    //     .await
-    //     .unwrap();
-    // let payload = synthesize_response.audio_content.unwrap();
-    // // `payload` is the base64-encoded mulaw/8000 bytes plus a `wav` header
-    // let mut file =
-    //     tokio::fs::File::create("/home/huston/Workspace/experimental/twilio-rs/dev/payload.txt")
-    //         .await
-    //         .unwrap();
-    // file.write_all(payload.as_bytes()).await.unwrap();
-    // // base64-decode `payload`
-    // let mut enc = Cursor::new(payload);
-    // let mut decoder = read::DecoderReader::new(&mut enc, &engine::general_purpose::STANDARD);
-    // let mut body = Vec::new();
-    // decoder.read_to_end(&mut body).unwrap();
-    // // `body` is now raw u8's; if written to a file on disk, `ffprobe` and `soxi` recognize it as
-    // // mulaw/8000 audio; `play` can play it.
-    // let mut file =
-    //     tokio::fs::File::create("/home/huston/Workspace/experimental/twilio-rs/dev/payload.wav")
-    //         .await
-    //         .unwrap();
-    // file.write_all(&body[..]).await.unwrap();
-    // // let wavreader = hound::WavReader::new(&body[..]).expect("Unable to open decoded synthesized payload as wav");
-    // // let spec = wavreader.spec();
-    // // println!("wav spec: {:?}", spec);
-    // // let s = std::str::from_utf8(&body[0..4]).expect("Error converting wav header to string");
-    // // println!("header piece: '{s}'");
-    // // Trim `wav` header from Google's response
-    // let trimmed = &body[44..];
-    // // `trimmed` is headerless mulaw/8000 audio; if written to a disk, it can be imported into
-    // // Audacity as mulaw-encoded, 8000Hz audio and played.
-    // let mut file =
-    //     tokio::fs::File::create("/home/huston/Workspace/experimental/twilio-rs/dev/payload-headerless.dat")
-    //         .await
-    //         .unwrap();
-    // file.write_all(trimmed).await.unwrap();
+    let trimmed = if USE_GOOGLE_TTS {
+        // See https://cloud.google.com/text-to-speech/docs/create-audio-text-command-line#synthesize_audio_from_text
+        let params = TextSynthesizeParams::default();
+        let audio_config = AudioConfig {
+            audio_encoding: Some(AudioConfigAudioEncoding::MULAW),
+            sample_rate_hertz: Some(8_000),
+            ..Default::default()
+        };
+        let input = SynthesisInput {
+            text: Some(TEST.to_string()),
+            ..Default::default()
+        };
+        let voice = VoiceSelectionParams {
+            language_code: Some("en-US".to_string()),
+            name: Some("en-US-Standard-E".to_string()),
+            ssml_gender: Some(VoiceSelectionParamsSsmlGender::FEMALE),
+            ..Default::default()
+        };
+        let speech_request = SynthesizeSpeechRequest {
+            audio_config: Some(audio_config),
+            input: Some(input),
+            voice: Some(voice),
+        };
+        let synthesize_response = app_state
+            .gcs_client
+            .synthesize(&params, &speech_request)
+            .await
+            .unwrap();
+        let payload = synthesize_response.audio_content.unwrap();
+        // `payload` is the base64-encoded mulaw/8000 bytes plus a `wav` header
+        if WRITE_SHIT_TO_FILES {
+            let mut file = tokio::fs::File::create("google_payload.txt").await.unwrap();
+            file.write_all(payload.as_bytes()).await.unwrap();
+        }
+        // base64-decode `payload`
+        let mut enc = Cursor::new(payload);
+        let mut decoder = read::DecoderReader::new(&mut enc, &engine::general_purpose::STANDARD);
+        let mut body = Vec::new();
+        decoder.read_to_end(&mut body).unwrap();
+        // `body` is now raw u8's; if written to a file on disk, `ffprobe` and `soxi` recognize it as
+        // mulaw/8000 audio; `play` can play it.
+        if WRITE_SHIT_TO_FILES {
+            let mut file = tokio::fs::File::create("google_payload_decoded.wav")
+                .await
+                .unwrap();
+            file.write_all(&body[..]).await.unwrap();
+        }
+        // Trim `wav` header from Google's response
+        let trimmed = body[44..].to_vec();
+        // `trimmed` is headerless mulaw/8000 audio; if written to a disk, it can be imported into
+        // Audacity as mulaw-encoded, 8000Hz audio and played.
+        if WRITE_SHIT_TO_FILES {
+            let mut file = tokio::fs::File::create("google_payload-headerless.dat")
+                .await
+                .unwrap();
+            file.write_all(&trimmed[..]).await.unwrap();
+        }
+        trimmed
+    } else {
+        // Create this file using audacity to record a mulaw/8000, single channel, wav file and
+        // removing the first 44 bytes
+        let mut file = tokio::fs::File::open("standard.dat").await.unwrap();
+        let mut trimmed = vec![];
+        file.read_to_end(&mut trimmed).await.unwrap();
+        trimmed
+    };
 
-    let mut file = tokio::fs::File::open("/home/huston/Workspace/experimental/twilio-rs/dev/standard.dat").await.unwrap();
-    let mut trimmed = vec![];
-    file.read_to_end(&mut trimmed).await.unwrap();
     // base64-encode the trimmed raw audio
     let re_encoded: String = engine::general_purpose::STANDARD.encode(trimmed);
     // Construct a Media message to send to Twilio.
@@ -222,30 +226,18 @@ async fn say_something(
         stream_sid: stream_sid.clone(),
     };
     let json = serde_json::to_string(&outbound_media).unwrap();
-    println!("{json}");
-    // let mut file =
-    //     tokio::fs::File::create("/home/huston/Workspace/experimental/twilio-rs/dev/payload-headerless.txt")
-    //         .await
-    //         .unwrap();
-    // file.write_all(json.as_bytes()).await.unwrap();
+    if WRITE_SHIT_TO_FILES {
+        let mut file = tokio::fs::File::create("twilio_media_message.json")
+            .await
+            .unwrap();
+        file.write_all(json.as_bytes()).await.unwrap();
+    }
     // We can verify that the json content is of the right format for a Media message to be
     // consumed by Twilio.
-    let message = Message::Text(json);
-
-    sender.send(message).await.unwrap();
-
-    // let outbound_mark_meta = OutboundMarkMeta {
-    //     name: "wtf".to_string(),
-    // };
-    // let outbound_mark = TwilioOutbound::Mark {
-    //     mark: outbound_mark_meta,
-    //     stream_sid,
-    // };
-    // let json = serde_json::to_string(&outbound_mark).unwrap();
     // println!("{json}");
-    // let message = Message::Text(json);
 
-    // sender.send(message).await.unwrap();
+    let message = Message::Text(json);
+    sender.send(message).await.unwrap();
 }
 
 const TEST: &str = r#"Now is the winter of our discontent
